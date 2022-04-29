@@ -29,19 +29,24 @@ def check_nbp_price(date):
 def parse_saxo_trades():
     transactions = []
 
-    wb = load_workbook(filename='saxo_trades_executed.xlsx')
+    file = 'modified_apha_tilray_merge_saxo_report.xlsx'
+    # file = 'saxo_trades_executed.xlsx'
+    wb = load_workbook(filename=file)
 
     trades = wb['Trades']
 
     itertrades = iter(trades.rows)
     next(itertrades)
     for row in itertrades:
-        date = row[3].value
-        instrument = row[2].value
-        amount = row[6].value
-        booked_amount = row[10].value
+        if row[0].value == 'SWAP':
+            transactions.append((row[0].value, row[1].value, row[2].value, row[3].value))
+        else:
+            date = row[3].value
+            instrument = row[2].value
+            amount = row[6].value
+            booked_amount = row[10].value
 
-        transactions.append((instrument, date, amount, booked_amount, booked_amount / amount))
+            transactions.append((instrument, date, amount, booked_amount, booked_amount / amount))
 
     return transactions
 
@@ -106,6 +111,25 @@ def process_transactions(transactions):
     for transaction in transactions:
         if transaction[0] == "SPLIT":
             print("TESLA SPLIT")
+            continue
+
+        if transaction[0] == "SWAP":
+            print("SWAP EVENT")
+
+            (method, from_instrument, to_instrument, remaining_amount) = transaction
+
+            swap_from_existing_positions = to_date[from_instrument]
+
+            swap_booked = 0
+            swap_amount = 0
+            for position in swap_from_existing_positions[1]:
+                swap_amount += position[0]
+                swap_booked += position[0] * position[1]
+
+            stack = [(remaining_amount, swap_booked / remaining_amount, swap_booked)]
+
+            del to_date[from_instrument]
+            to_date[to_instrument] = (remaining_amount, stack)
             continue
 
         (instrument, date, amount, booked_amount, per_share) = transaction
@@ -173,7 +197,7 @@ def process_transactions(transactions):
 
 
 def apply_exchange_rate(transaction):
-    if transaction[0] != "SPLIT":
+    if transaction[0] != "SPLIT" and transaction[0] != 'SWAP':
         (instrument, date, amount, booked_amount, per_share) = transaction
         exchange_rate = check_nbp_price(date)
 
