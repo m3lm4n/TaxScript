@@ -5,8 +5,8 @@
 
 import json
 from datetime import datetime, timedelta
-from urllib import request
 from math import isclose
+from urllib import request
 
 from openpyxl import load_workbook
 
@@ -99,7 +99,9 @@ def parse_revolut_trades():
 
 def process_transactions(transactions):
     to_date = {}
-    to_tax = []
+    to_tax = {}
+    profit = {}
+    cost = {}
 
     for transaction in transactions:
         if transaction[0] == "SPLIT":
@@ -107,6 +109,11 @@ def process_transactions(transactions):
             continue
 
         (instrument, date, amount, booked_amount, per_share) = transaction
+
+        if date.year not in to_tax:
+            to_tax[date.year] = []
+            profit[date.year] = []
+            cost[date.year] = []
 
         if instrument not in to_date:
             to_date[instrument] = (0, [])
@@ -125,38 +132,44 @@ def process_transactions(transactions):
             tax = 0
             while not isclose(amount, 0, abs_tol=0.000001):
                 if len(price_stack) == 0:
-                    print("------------------- Taxation event with 0 shares. Check for errors --------------------------")
+                    print(
+                        "------------------- Taxation event with 0 shares. Check for errors --------------------------")
                     break
 
-                (trans_amount, trans_per_share, trans_booked_amount) = price_stack.pop(0)
+                (owned_amount, bought_at_price_per_share, buy_booked_cost) = price_stack.pop(0)
 
-                bought_at = trans_per_share
+                bought_at = bought_at_price_per_share
                 sold_at = per_share
                 per_share_taxable = abs(sold_at) - abs(bought_at)
 
-                if abs(trans_amount) <= abs(amount):
-                    amount += abs(trans_amount)
+                if abs(owned_amount) <= abs(amount):
+                    amount += abs(owned_amount)
 
                     if amount > 0:
-                        price_stack.insert(0, (amount, trans_per_share, amount * trans_per_share))
+                        price_stack.insert(0, (amount, bought_at_price_per_share, amount * bought_at_price_per_share))
 
-                    tax += per_share_taxable * abs(trans_amount)
+                    tax += per_share_taxable * abs(owned_amount)
+                    cost[date.year].append((instrument, abs(bought_at_price_per_share) * abs(owned_amount)))
+                    profit[date.year].append((instrument, abs(sold_at) * abs(owned_amount)))
+
                 else:
-                    new_trans_amount = abs(trans_amount) - abs(amount)
+                    new_trans_amount = abs(owned_amount) - abs(amount)
                     amount = 0
-                    new_trans_booked_amount = new_trans_amount * trans_per_share
+                    new_trans_booked_amount = new_trans_amount * bought_at_price_per_share
 
-                    amount_sold = abs(trans_amount) - abs(new_trans_amount)
+                    amount_sold = abs(owned_amount) - abs(new_trans_amount)
                     tax += per_share_taxable * amount_sold
+                    cost[date.year].append((instrument, abs(bought_at_price_per_share) * abs(amount_sold)))
+                    profit[date.year].append((instrument, abs(sold_at) * abs(amount_sold)))
 
-                    price_stack.insert(0, (new_trans_amount, trans_per_share, new_trans_booked_amount))
+                    price_stack.insert(0, (new_trans_amount, bought_at_price_per_share, new_trans_booked_amount))
 
-            to_tax.append((sold_amount, instrument, per_share, tax))
+            to_tax[date.year].append((sold_amount, instrument, per_share, tax))
 
             print("Taxation event sold %d of %s at %.2f per share. Taxable income is %.2f" % (
             abs(sold_amount), instrument, abs(per_share), tax))
 
-    return to_tax
+    return (to_tax, profit, cost)
 
 
 def apply_exchange_rate(transaction):
@@ -175,14 +188,30 @@ if __name__ == '__main__':
     saxo_transaction_list = parse_saxo_trades()
 
     transaction_list = revolut_transaction_list + saxo_transaction_list
-    transaction_list = map(apply_exchange_rate, transaction_list)
+    transaction_list = list(map(apply_exchange_rate, transaction_list))
 
-    taxable_events = process_transactions(transaction_list)
+    (taxable_events, profit, cost) = process_transactions(transaction_list)
 
-    final_taxable_income = 0
-    for tax in taxable_events:
-        final_taxable_income += tax[3]
+    for year in taxable_events:
+        print("Calculating year %d" % year)
+        final_year_taxable_income = 0
+        cost_year = 0
+        profit_year = 0
 
-    final_tax = final_taxable_income * 0.19
-    print("Final taxable income %.2f" % final_taxable_income)
-    print("Final tax %.2f" % final_tax)
+        for cost_event in cost[year]:
+            cost_year += cost_event[1]
+
+        for profit_event in profit[year]:
+            profit_year += profit_event[1]
+
+        for event in taxable_events[year]:
+            print("Event %s" % str(event))
+            final_year_taxable_income += event[3]
+
+        final_year_tax = final_year_taxable_income * 0.19
+
+        print("%d :Final cost %.2f" % (year, cost_year))
+        print("%d :Final profit %.2f" % (year, profit_year))
+
+        print("%d :Final taxable income %.2f" % (year, final_year_taxable_income))
+        print("%d :Final tax %.2f" % (year, final_year_tax))
